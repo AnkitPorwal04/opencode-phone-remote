@@ -107,7 +107,8 @@ flowchart LR
     PUSH -- "push notification<br/>(idle · permission · error)" --> SW
     CORE <--> TUI
     PWA -. "same WiFi (HTTP)" .-> HTTP
-    PWA -. "anywhere (HTTPS)" .-> CF -.-> HTTP
+    PWA -. "anywhere (HTTPS)" .-> CF
+    CF -.-> HTTP
     QR -- "scan to connect" --> PWA
 ```
 
@@ -117,7 +118,7 @@ flowchart LR
 sequenceDiagram
     autonumber
     participant P as 📱 Phone PWA
-    participant RC as 🔌 Plugin server (7777)
+    participant RC as 🔌 Plugin server
     participant OC as ⚙️ opencode core
     participant LLM as 🤖 Model
     participant TUI as 🖥️ TUI
