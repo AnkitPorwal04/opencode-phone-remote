@@ -45,7 +45,7 @@ const RC_DIR = join(homedir(), ".config", "opencode", "remote-control")
 const STATE_FILE = join(RC_DIR, "state.json")
 const PORT_RANGE = [7777, 7778, 7779, 7780, 7781, 7782, 7783, 7784, 7785, 7786, 7787]
 // bump when the embedded PWA changes - connected phones auto-reload on mismatch
-const UI_VERSION = "4"
+const UI_VERSION = "5"
 
 // ---------- state ----------
 function loadState(): RCState {
@@ -162,6 +162,7 @@ export const RemoteControlPlugin: Plugin = async ({ client, directory }) => {
     const pendingPerms = new Map<string, PendingPermission>()
     const lastIdlePush = new Map<string, number>()
     const busySessions = new Set<string>()
+    let metaCache: { at: number; data: unknown } | null = null
 
     function cacheSession(info: unknown): void {
       if (typeof info !== "object" || info === null) return
@@ -201,9 +202,9 @@ export const RemoteControlPlugin: Plugin = async ({ client, directory }) => {
       }
     }
 
-    async function pushAll(title: string, body: string, tag: string): Promise<void> {
+    async function pushAll(title: string, body: string, tag: string, data?: Record<string, unknown>): Promise<void> {
       if (!webpush || state.subscriptions.length === 0) return
-      const payload = JSON.stringify({ title, body, tag })
+      const payload = JSON.stringify({ title, body, tag, data })
       const dead: string[] = []
       await Promise.all(
         state.subscriptions.map(async (sub) => {
@@ -318,13 +319,21 @@ export const RemoteControlPlugin: Plugin = async ({ client, directory }) => {
       const promptMatch = p.match(/^\/api\/session\/([^/]+)\/prompt$/)
       if (promptMatch && req.method === "POST") {
         const id = promptMatch[1]
-        const body = JSON.parse((await readBody(req)) || "{}") as { text?: string }
+        const body = JSON.parse((await readBody(req)) || "{}") as {
+          text?: string
+          model?: { providerID: string; modelID: string }
+          agent?: string
+        }
         if (!body.text || typeof body.text !== "string") return sendJSON(res, 400, { error: "text required" })
         const dir = sessions.get(id)?.directory
         await client.session.promptAsync({
           path: { id },
           query: { directory: dir },
-          body: { parts: [{ type: "text", text: body.text }] },
+          body: {
+            parts: [{ type: "text", text: body.text }],
+            ...(body.model?.providerID && body.model?.modelID ? { model: body.model } : {}),
+            ...(body.agent ? { agent: body.agent } : {}),
+          },
         })
         return sendJSON(res, 202, { ok: true })
       }
@@ -359,6 +368,31 @@ export const RemoteControlPlugin: Plugin = async ({ client, directory }) => {
       }
       if (p === "/api/permissions" && req.method === "GET") {
         return sendJSON(res, 200, [...pendingPerms.values()])
+      }
+      if (p === "/api/meta" && req.method === "GET") {
+        if (metaCache && Date.now() - metaCache.at < 60_000) return sendJSON(res, 200, metaCache.data)
+        const [prov, ags] = await Promise.all([
+          client.config.providers({ query: { directory } }).catch(() => null),
+          client.app.agents({ query: { directory } }).catch(() => null),
+        ])
+        const providers = (prov?.data?.providers ?? []).map((pr) => ({
+          id: pr.id,
+          name: pr.name,
+          models: Object.values(pr.models ?? {}).map((m) => ({ id: m.id, name: m.name })),
+        }))
+        const agents = (ags?.data ?? [])
+          .filter((a) => a.mode !== "subagent")
+          .map((a) => ({ name: a.name, description: a.description ?? "" }))
+        const data = { providers, agents, defaults: prov?.data?.default ?? {} }
+        metaCache = { at: Date.now(), data }
+        return sendJSON(res, 200, data)
+      }
+      const todoMatch = p.match(/^\/api\/session\/([^/]+)\/todo$/)
+      if (todoMatch && req.method === "GET") {
+        const id = todoMatch[1]
+        const dir = sessions.get(id)?.directory
+        const result = await client.session.todo({ path: { id }, query: { directory: dir } }).catch(() => null)
+        return sendJSON(res, 200, result?.data ?? [])
       }
       if (p === "/api/events" && req.method === "GET") {
         res.writeHead(200, {
@@ -565,9 +599,10 @@ export const RemoteControlPlugin: Plugin = async ({ client, directory }) => {
               })
               const sess = sessions.get(perm.sessionID)
               void pushAll(
-                "🔐 Approval needed",
-                (perm.title || perm.type) + (sess ? " — " + sess.title : ""),
+                "\ud83d\udd10 Approval needed",
+                (perm.title || perm.type) + (sess ? " \u2014 " + sess.title : ""),
                 "perm-" + perm.id,
+                { kind: "permission", sid: perm.sessionID, pid: perm.id, key: state.token },
               )
             }
           }
@@ -656,10 +691,24 @@ const SW_JS = [
   "self.addEventListener('push',function(e){",
   "  var data={title:'opencode',body:'',tag:'oc'};",
   "  try{data=e.data.json()}catch(err){}",
-  "  e.waitUntil(self.registration.showNotification(data.title||'opencode',{body:data.body||'',tag:data.tag||'oc',icon:'/icon.svg',badge:'/icon.svg'}));",
+  "  var opts={body:data.body||'',tag:data.tag||'oc',icon:'/icon.svg',badge:'/icon.svg',data:data.data||null};",
+  "  if(data.data&&data.data.kind==='permission'){",
+  "    opts.actions=[{action:'approve',title:'\\u2705 Approve'},{action:'reject',title:'\\u2715 Reject'}];",
+  "    opts.requireInteraction=true;",
+  "  }",
+  "  e.waitUntil(self.registration.showNotification(data.title||'opencode',opts));",
   "});",
   "self.addEventListener('notificationclick',function(e){",
   "  e.notification.close();",
+  "  var d=e.notification.data;",
+  "  if(d&&d.kind==='permission'&&(e.action==='approve'||e.action==='reject')){",
+  "    e.waitUntil(fetch('/api/session/'+d.sid+'/permission/'+d.pid,{",
+  "      method:'POST',",
+  "      headers:{'Authorization':'Bearer '+d.key,'Content-Type':'application/json'},",
+  "      body:JSON.stringify({response:e.action==='approve'?'once':'reject'})",
+  "    }).catch(function(){}));",
+  "    return;",
+  "  }",
   "  e.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(function(list){",
   "    for(var i=0;i<list.length;i++){if('focus' in list[i])return list[i].focus();}",
   "    return clients.openWindow('/');",
@@ -755,6 +804,42 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
 .empty .big{font-size:34px;margin-bottom:10px}
 .flash{animation:fl .6s ease}
 @keyframes fl{0%{background:#13203a}100%{background:var(--bg)}}
+/* code blocks */
+.msg a{color:#9db8ff;word-break:break-all}
+.cb{margin:8px 0;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#0a0d13}
+.cbh{display:flex;align-items:center;justify-content:space-between;padding:5px 10px;background:#10141d;border-bottom:1px solid var(--border)}
+.cbh span{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;color:var(--dim2);text-transform:lowercase}
+.cbh .copy{background:var(--card2);border:1px solid var(--border);color:var(--dim);border-radius:7px;font-size:10.5px;padding:3px 10px;font-family:inherit}
+.cb pre{background:none;border:none;border-radius:0;margin:0;padding:10px}
+/* tool calls */
+.toolwrap{align-self:flex-start;max-width:88%}
+.toolwrap .tool{max-width:100%;width:auto}
+.toolwrap .tool.run{border-color:rgba(251,191,36,.35);color:#d8b45a}
+.toolwrap .tool.err{border-color:rgba(248,113,113,.4);color:#e89a94}
+.tooldet{margin-top:5px;background:#0a0d13;border:1px solid var(--border);border-radius:10px;padding:9px 11px;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--dim);white-space:pre-wrap;word-break:break-word;max-height:260px;overflow-y:auto;line-height:1.45}
+.tooldet b{color:var(--fg);font-weight:650}
+/* pickers */
+#pickers{display:none;gap:8px;padding:8px 12px 0;background:rgba(10,12,16,.88);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-top:1px solid var(--border)}
+#pickers.on{display:flex}
+#pickers select{flex:1;min-width:0;appearance:none;-webkit-appearance:none;background:var(--card) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%235c6678'/%3E%3C/svg%3E") no-repeat right 12px center;border:1px solid var(--border);color:var(--dim);border-radius:999px;font-size:11.5px;padding:6px 26px 6px 12px;font-family:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#pickers.on+#composer{border-top:none}
+/* todos */
+#todoBar{display:none;padding:8px 12px;background:#0e1118;border-bottom:1px solid var(--border);font-size:12.5px;color:var(--dim)}
+#todoBar.on{display:block}
+#todoBar .tsum{display:flex;align-items:center;gap:8px}
+#todoBar .tsum .cnt{color:var(--acc);font-weight:700;flex-shrink:0}
+#todoBar .tsum .cur{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#todoBar .tsum .chev{color:var(--dim2);flex-shrink:0;transition:transform .15s}
+#todoBar.open .tsum .chev{transform:rotate(180deg)}
+#todoList{display:none;margin-top:8px;line-height:1.9}
+#todoBar.open #todoList{display:block}
+#todoList .ti{display:flex;gap:8px;align-items:flex-start}
+#todoList .ti .ic{flex-shrink:0}
+#todoList .done{color:var(--dim2);text-decoration:line-through}
+#todoList .prog{color:var(--fg)}
+/* mic */
+#micBtn{background:var(--card);border:1px solid var(--border)!important;color:var(--dim)}
+#micBtn.rec{background:var(--red);color:#fff;animation:pulse 1.6s infinite}
 </style>
 </head>
 <body>
@@ -768,6 +853,7 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
     <button class="icon" id="refreshBtn">↻</button>
     <button class="icon" id="outBtn" title="disconnect"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 3v8" fill="none" stroke="#ff7b72" stroke-width="2.2" stroke-linecap="round"/><path d="M7 6.2a8 8 0 1 0 10 0" fill="none" stroke="#ff7b72" stroke-width="2.2" stroke-linecap="round"/></svg></button>
   </header>
+  <div id="todoBar"><div class="tsum"><span class="cnt" id="tdCnt"></span><span class="cur" id="tdCur"></span><span class="chev">▾</span></div><div id="todoList"></div></div>
   <main id="main">
     <div id="connectHelp" class="hidden">No access key.<br>On your Mac run:<br><b style="color:#e9edf4">~/.config/opencode/remote-control/qr.sh</b><br>and scan the QR again.</div>
     <div id="pushNote" class="note hidden">Push alerts need HTTPS. <b>brew install cloudflared</b> on your Mac, restart opencode, re-scan the QR — then alerts work even with this tab closed.<button class="x" id="noteX">×</button></div>
@@ -784,7 +870,12 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
       <button class="pb-reject" id="pbReject">Reject</button>
     </div>
   </div>
+  <div id="pickers">
+    <select id="agentSel"><option value="">Agent: auto</option></select>
+    <select id="modelSel"><option value="">Model: default</option></select>
+  </div>
   <div id="composer">
+    <button id="micBtn" class="hidden"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" stroke-width="2"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
     <textarea id="input" rows="1" placeholder="Prompt opencode…"></textarea>
     <button id="abortBtn">■</button>
     <button id="sendBtn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
@@ -795,6 +886,7 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
 "use strict";
 var UIV="${UI_VERSION}";
 var KEY=null, view="list", cur=null, curDir=null, sessions=[], perms=[], es=null, refetchT=null, busyMap={};
+var CODES=[], roleByMsg={}, partsById={}, meta=null, todos=[], recog=null;
 var $=function(id){return document.getElementById(id)};
 
 // --- key handling ---
@@ -817,14 +909,23 @@ function api(path,opts){
 // --- rendering helpers ---
 function esc(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML;}
 function md(s){
-  var out=esc(s);
-  out=out.replace(/\\u0060\\u0060\\u0060([\\s\\S]*?)\\u0060\\u0060\\u0060/g,function(m,c){return "<pre><code>"+c.replace(/^\\w*\\n/,"")+"</code></pre>";});
+  var blocks=[];
+  var out=s.replace(/\\u0060\\u0060\\u0060(\\w*)[ \\t]*\\n?([\\s\\S]*?)\\u0060\\u0060\\u0060/g,function(m,lang,code){
+    blocks.push({lang:lang,code:code.replace(/\\n$/,"")});
+    return "\\u0000B"+(blocks.length-1)+"\\u0000";
+  });
+  out=esc(out);
   out=out.replace(/\\u0060([^\\u0060\\n]+)\\u0060/g,"<code>$1</code>");
   out=out.replace(/\\*\\*([^*\\n]+)\\*\\*/g,"<b>$1</b>");
+  out=out.replace(/(https?:\\/\\/[^\\s<]+)/g,'<a href="$1" target="_blank" rel="noopener">$1</a>');
   out=out.replace(/\\n/g,"<br>");
-  out=out.replace(/<pre><code>([\\s\\S]*?)<\\/code><\\/pre>/g,function(m,c){return "<pre><code>"+c.replace(/<br>/g,"\\n")+"</code></pre>";});
+  out=out.replace(/\\u0000B(\\d+)\\u0000/g,function(m,i){
+    var b=blocks[+i];var ci=CODES.push(b.code)-1;
+    return "<div class='cb'><div class='cbh'><span>"+esc(b.lang||"code")+"</span><button class='copy' data-ci='"+ci+"'>copy</button></div><pre><code>"+esc(b.code)+"</code></pre></div>";
+  });
   return out;
 }
+function trunc(s,n){return s.length>n?s.slice(0,n)+"\\n… ("+(s.length-n)+" more)":s;}
 function rel(ts){
   var d=Date.now()-ts;
   if(d<60000)return "just now";
@@ -870,6 +971,8 @@ function showList(){
   $("sessionList").classList.remove("hidden");
   $("newBtnWrap").classList.remove("hidden");
   $("composer").classList.remove("on");
+  $("pickers").classList.remove("on");
+  renderTodos();
   renderPermBanner();
   loadSessions();
 }
@@ -883,8 +986,10 @@ function showChat(s){
   $("messages").classList.remove("hidden");
   $("messages").innerHTML="<div class='tool'>loading…</div>";
   $("composer").classList.add("on");
+  $("pickers").classList.add("on");
   setBusy(!!busyMap[s.id]);
   renderPermBanner();
+  todos=[];renderTodos();loadTodos();loadMeta();
   loadMessages();
 }
 function renderSessions(){
@@ -909,28 +1014,100 @@ function loadSessions(){
     sessions=list;syncBusy(list);renderSessions();
   }).catch(function(){});
 }
+function nearBottom(){var m=$("main");return m.scrollHeight-m.scrollTop-m.clientHeight<140;}
+function upsertPart(p,role){
+  if(!p||!p.id)return;
+  var host=$("messages");
+  var em=host.querySelector(".empty");if(em)em.remove();
+  var el=host.querySelector("[data-pid='"+p.id+"']");
+  if(p.type==="text"){
+    if(p.synthetic||!p.text)return;
+    var r=role||roleByMsg[p.messageID]||"assistant";
+    if(!el){el=document.createElement("div");el.setAttribute("data-pid",p.id);host.appendChild(el);}
+    el.className="msg "+(r==="user"?"user":"assistant");
+    el.innerHTML=md(p.text);
+  }else if(p.type==="tool"){
+    partsById[p.id]=p;
+    if(!el){
+      el=document.createElement("div");el.className="toolwrap";el.setAttribute("data-pid",p.id);
+      el.innerHTML="<button class='tool'></button><div class='tooldet hidden'></div>";
+      host.appendChild(el);
+    }
+    var st=(p.state&&p.state.status)||"pending";
+    var ic=st==="completed"?"🔧":st==="error"?"⚠️":"⏳";
+    var cls=st==="completed"?"":st==="error"?" err":" run";
+    var btn=el.querySelector(".tool");
+    btn.className="tool"+cls;
+    btn.textContent=ic+" "+(p.tool||"tool");
+  }
+}
 function loadMessages(){
   if(!cur)return;
   api("/api/session/"+cur+"/messages?limit=150").then(function(msgs){
     var el=$("messages");el.innerHTML="";
     msgs.forEach(function(m){
-      var info=m.info,parts=m.parts||[];
-      var textHtml="";
-      parts.forEach(function(p){
-        if(p.type==="text"&&p.text&&!p.synthetic){textHtml+=md(p.text);}
-        else if(p.type==="tool"){
-          var chip=document.createElement("div");
-          chip.className="tool";chip.textContent="🔧 "+(p.tool||"tool");
-          el.appendChild(chip);
-        }
-      });
-      if(!textHtml)return;
-      var wrap=document.createElement("div");
-      wrap.className="msg "+(info.role==="user"?"user":"assistant");
-      wrap.innerHTML=textHtml;
-      el.appendChild(wrap);
+      roleByMsg[m.info.id]=m.info.role;
+      (m.parts||[]).forEach(function(p){upsertPart(p,m.info.role);});
     });
+    if(!el.childNodes.length)el.innerHTML="<div class='empty'>Send a prompt to get started.</div>";
     $("main").scrollTop=$("main").scrollHeight;
+  }).catch(function(){});
+}
+$("messages").addEventListener("click",function(e){
+  var t=e.target&&e.target.closest?e.target.closest("button"):null;
+  if(!t)return;
+  if(t.classList.contains("copy")){
+    var code=CODES[+t.getAttribute("data-ci")]||"";
+    var done=function(){t.textContent="copied!";setTimeout(function(){t.textContent="copy";},1200);};
+    if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(code).then(done,done);}else{done();}
+    return;
+  }
+  if(t.classList.contains("tool")){
+    var wrap=t.parentElement,det=wrap.querySelector(".tooldet"),p=partsById[wrap.getAttribute("data-pid")];
+    if(!det)return;
+    if(det.classList.contains("hidden")){
+      var st=(p&&p.state)||{},txt="";
+      if(st.input)txt+="input\\n"+trunc(JSON.stringify(st.input,null,1),1500);
+      if(st.output)txt+=(txt?"\\n\\n":"")+"output\\n"+trunc(String(st.output),3000);
+      if(st.error)txt+=(txt?"\\n\\n":"")+"error\\n"+trunc(String(st.error),1500);
+      det.textContent=txt||"no details yet";
+      det.classList.remove("hidden");
+    }else{det.classList.add("hidden");}
+  }
+});
+function renderTodos(){
+  var bar=$("todoBar");
+  if(view!=="chat"||!todos.length){bar.classList.remove("on");bar.classList.remove("open");return;}
+  var done=todos.filter(function(t){return t.status==="completed";}).length;
+  var curT=null;
+  todos.forEach(function(t){if(!curT&&t.status==="in_progress")curT=t;});
+  $("tdCnt").textContent="☑ "+done+"/"+todos.length;
+  $("tdCur").textContent=curT?curT.content:"";
+  var icons={completed:"✅",in_progress:"🔵",pending:"⚪",cancelled:"✖"};
+  $("todoList").innerHTML=todos.map(function(t){
+    var cls=t.status==="completed"?"done":t.status==="in_progress"?"prog":"";
+    return "<div class='ti "+cls+"'><span class='ic'>"+(icons[t.status]||"⚪")+"</span><span>"+esc(t.content)+"</span></div>";
+  }).join("");
+  bar.classList.add("on");
+}
+function loadTodos(){
+  if(!cur)return;
+  api("/api/session/"+cur+"/todo").then(function(t){todos=t||[];renderTodos();}).catch(function(){});
+}
+function loadMeta(){
+  if(meta)return;
+  api("/api/meta").then(function(m){
+    meta=m;
+    var as=$("agentSel"),ms=$("modelSel");
+    (m.agents||[]).forEach(function(a){var o=document.createElement("option");o.value=a.name;o.textContent="Agent: "+a.name;as.appendChild(o);});
+    (m.providers||[]).forEach(function(pr){
+      var g=document.createElement("optgroup");g.label=pr.name||pr.id;
+      (pr.models||[]).forEach(function(mo){var o=document.createElement("option");o.value=pr.id+"|"+mo.id;o.textContent=mo.name||mo.id;g.appendChild(o);});
+      ms.appendChild(g);
+    });
+    var sa=localStorage.getItem("oc_agent")||"",sm=localStorage.getItem("oc_model")||"";
+    as.value=sa;if(as.value!==sa)as.value="";
+    ms.value=sm;if(ms.value!==sm)ms.value="";
   }).catch(function(){});
 }
 function renderPermBanner(){
@@ -967,13 +1144,24 @@ function connectSSE(){
   es.onmessage=function(e){
     var ev;try{ev=JSON.parse(e.data)}catch(err){return;}
     var props=ev.properties||{};
-    if(ev.type==="message.updated"||ev.type==="message.part.updated"){
+    if(ev.type==="message.updated"){
       var info=props.info||{};
-      var sid=(info.sessionID)||(props.part&&props.part.sessionID)||props.sessionID;
-      if(sid&&sid===cur){
+      if(info.id)roleByMsg[info.id]=info.role;
+      if(info.sessionID===cur){
         if(refetchT)clearTimeout(refetchT);
-        refetchT=setTimeout(loadMessages,450);
+        refetchT=setTimeout(loadMessages,800);
       }
+    }
+    if(ev.type==="message.part.updated"){
+      var part=props.part;
+      if(part&&part.sessionID===cur){
+        var stick=nearBottom();
+        upsertPart(part);
+        if(stick)$("main").scrollTop=$("main").scrollHeight;
+      }
+    }
+    if(ev.type==="todo.updated"&&props.sessionID===cur){
+      todos=props.todos||[];renderTodos();
     }
     if(ev.type==="session.status"){
       var ssid=props.sessionID,st=props.status;
@@ -1083,13 +1271,41 @@ $("sendBtn").onclick=function(){
   var b=document.createElement("div");b.className="msg user";b.innerHTML=md(t);el.appendChild(b);
   $("main").scrollTop=$("main").scrollHeight;
   setBusy(true);
-  api("/api/session/"+cur+"/prompt",{method:"POST",body:JSON.stringify({text:t})}).catch(function(){setBusy(false)});
+  var payload={text:t};
+  var av=$("agentSel").value,mv=$("modelSel").value;
+  if(av)payload.agent=av;
+  if(mv){var mm=mv.split("|");payload.model={providerID:mm[0],modelID:mm.slice(1).join("|")};}
+  api("/api/session/"+cur+"/prompt",{method:"POST",body:JSON.stringify(payload)}).catch(function(){setBusy(false)});
 };
 $("abortBtn").onclick=function(){
   if(!cur)return;
   api("/api/session/"+cur+"/abort",{method:"POST",body:"{}"}).then(function(){setBusy(false)});
 };
 $("input").addEventListener("input",function(){this.style.height="auto";this.style.height=Math.min(this.scrollHeight,120)+"px";});
+$("todoBar").onclick=function(){this.classList.toggle("open");};
+$("agentSel").onchange=function(){localStorage.setItem("oc_agent",this.value);};
+$("modelSel").onchange=function(){localStorage.setItem("oc_model",this.value);};
+var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+if(SR){
+  $("micBtn").classList.remove("hidden");
+  $("micBtn").onclick=function(){
+    if(recog){recog.stop();return;}
+    recog=new SR();
+    recog.lang=navigator.language||"en-US";
+    recog.interimResults=true;
+    var base=$("input").value;
+    recog.onresult=function(e){
+      var txt="";
+      for(var i=0;i<e.results.length;i++)txt+=e.results[i][0].transcript;
+      $("input").value=(base?base+" ":"")+txt;
+      $("input").dispatchEvent(new Event("input"));
+    };
+    recog.onend=function(){recog=null;$("micBtn").classList.remove("rec");};
+    recog.onerror=function(){recog=null;$("micBtn").classList.remove("rec");};
+    $("micBtn").classList.add("rec");
+    try{recog.start();}catch(err){recog=null;$("micBtn").classList.remove("rec");}
+  };
+}
 
 if(KEY){
   showList();
