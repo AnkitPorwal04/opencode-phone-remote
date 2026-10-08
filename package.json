@@ -1,0 +1,42 @@
+{
+  "name": "opencode-phone-remote",
+  "version": "0.1.0",
+  "description": "Control any opencode session from your phone: scan a QR, send prompts, watch answers live, approve permissions, and get push alerts.",
+  "type": "module",
+  "exports": {
+    ".": "./src/plugin.ts",
+    "./tui": "./src/tui.ts"
+  },
+  "files": [
+    "src",
+    "install.sh",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "remote-control",
+    "mobile",
+    "pwa",
+    "qr",
+    "web-push"
+  ],
+  "author": "Ankit Porwal <porwalankit443@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AnkitPorwal04/opencode-phone-remote.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AnkitPorwal04/opencode-phone-remote/issues"
+  },
+  "homepage": "https://github.com/AnkitPorwal04/opencode-phone-remote#readme",
+  "dependencies": {
+    "qrcode-generator": "^2.0.4",
+    "web-push": "^3.6.7"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.4.0"
+  }
+}
