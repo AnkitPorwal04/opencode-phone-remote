@@ -44,6 +44,8 @@ interface BusEvent {
 const RC_DIR = join(homedir(), ".config", "opencode", "remote-control")
 const STATE_FILE = join(RC_DIR, "state.json")
 const PORT_RANGE = [7777, 7778, 7779, 7780, 7781, 7782, 7783, 7784, 7785, 7786, 7787]
+// bump when the embedded PWA changes - connected phones auto-reload on mismatch
+const UI_VERSION = "3"
 
 // ---------- state ----------
 function loadState(): RCState {
@@ -119,7 +121,7 @@ function sendJSON(res: ServerResponse, code: number, obj: unknown): void {
   res.end(body)
 }
 function sendText(res: ServerResponse, code: number, type: string, body: string): void {
-  res.writeHead(code, { "Content-Type": type, "Access-Control-Allow-Origin": "*" })
+  res.writeHead(code, { "Content-Type": type, "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" })
   res.end(body)
 }
 
@@ -260,6 +262,7 @@ export const RemoteControlPlugin: Plugin = async ({ client, directory }) => {
       }
       // public shell assets (no secrets inside)
       if (p === "/" && req.method === "GET") return sendText(res, 200, "text/html; charset=utf-8", PWA_HTML)
+      if (p === "/version") return sendJSON(res, 200, { uiVersion: UI_VERSION })
       if (p === "/sw.js") return sendText(res, 200, "application/javascript", SW_JS)
       if (p === "/manifest.webmanifest") return sendText(res, 200, "application/manifest+json", MANIFEST)
       if (p === "/icon.svg") return sendText(res, 200, "image/svg+xml", ICON_SVG)
@@ -281,15 +284,19 @@ export const RemoteControlPlugin: Plugin = async ({ client, directory }) => {
       if (!authorized(url, req)) return sendJSON(res, 401, { error: "unauthorized" })
 
       if (p === "/qr" && req.method === "GET") {
-        const connectURL = (tunnelURL ?? "http://" + lanIP() + ":" + port) + "/?key=" + state.token
-        return sendText(res, 200, "text/html; charset=utf-8", qrPage(connectURL, tunnelURL !== null))
+        const lanConnect = "http://" + lanIP() + ":" + port + "/?key=" + state.token
+        const tunnelConnect = tunnelURL ? tunnelURL + "/?key=" + state.token : null
+        return sendText(res, 200, "text/html; charset=utf-8", qrPage(lanConnect, tunnelConnect))
       }
       if (p === "/api/state" && req.method === "GET") {
         const list = await refreshSessions()
         return sendJSON(res, 200, {
           ok: true,
           directory,
+          uiVersion: UI_VERSION,
           baseUrl: tunnelURL ?? "http://" + lanIP() + ":" + port,
+          lanUrl: "http://" + lanIP() + ":" + port,
+          tunnelUrl: tunnelURL,
           https: tunnelURL !== null,
           pushEnabled: webpush !== null,
           sessions: list,
@@ -473,12 +480,14 @@ export const RemoteControlPlugin: Plugin = async ({ client, directory }) => {
 
     // announce URL: toast + files
     function connectURL(): string {
-      return (tunnelURL ?? "http://" + lanIP() + ":" + port) + "/?key=" + state.token
+      return "http://" + lanIP() + ":" + port + "/?key=" + state.token
     }
     function announce(): void {
       const url = connectURL()
       const localQR = "http://127.0.0.1:" + port + "/qr?key=" + state.token
-      let content = "opencode remote-control\n=======================\n\nConnect URL (open on phone):\n" + url + "\n\nQR page (open on THIS Mac, then scan with phone):\n" + localQR + "\n"
+      let content = "opencode remote-control\n=======================\n\nConnect URL (open on phone - STABLE, survives restarts, install the app from this one):\n" + url + "\n"
+      if (tunnelURL) content += "\nAway-from-home URL (HTTPS, changes every restart):\n" + tunnelURL + "/?key=" + state.token + "\n"
+      content += "\nQR page (open on THIS Mac, then scan with phone):\n" + localQR + "\n"
       if (qrlib) {
         try {
           const qr = qrlib(0, "M")
@@ -609,19 +618,31 @@ interface QRCodeObj {
 // ============================================================
 // embedded web assets
 // ============================================================
-function qrPage(connectURL: string, viaTunnel: boolean): string {
-  const safe = connectURL.replace(/"/g, "&quot;")
+function qrPage(lanURL: string, tunnelURL: string | null): string {
+  const lanSafe = lanURL.replace(/"/g, "&quot;")
+  const tunSafe = tunnelURL ? tunnelURL.replace(/"/g, "&quot;") : null
+  const tunnelBlock = tunSafe
+    ? "<div class='sec'><span class='badge b2'>🌍 ANYWHERE · HTTPS</span><div class='qr' id='qr2'>loading…</div>" +
+      "<p>For when you're away from home. Push notifications work here. <b>This link changes every opencode restart</b> — don't install the app from it.</p>" +
+      "<p><code>" + tunSafe + "</code></p></div>"
+    : "<p style='margin-top:28px'>Tip: <b>brew install cloudflared</b> then restart opencode for access from anywhere + push notifications.</p>"
   return (
     "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>" +
     "<title>opencode remote — scan me</title>" +
-    "<style>body{background:#0d1117;color:#e6edf3;font-family:-apple-system,system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;text-align:center}" +
-    "#qr{background:#fff;padding:20px;border-radius:16px;margin:24px 0}#qr svg{display:block}" +
-    "h1{font-size:22px;font-weight:600}p{color:#8b949e;max-width:420px;line-height:1.5}code{background:#161b22;padding:2px 8px;border-radius:6px;font-size:12px;word-break:break-all}</style>" +
-    "</head><body><h1>📱 Scan with your phone</h1><div id='qr'>loading…</div>" +
-    "<p>" + (viaTunnel ? "Secure tunnel active — works from anywhere, push notifications enabled." : "Works on the same WiFi as this Mac. Tip: <b>brew install cloudflared</b> then restart opencode for access from anywhere + push notifications.") + "</p>" +
-    "<p><code>" + safe + "</code></p>" +
+    "<style>body{background:#0d1117;color:#e6edf3;font-family:-apple-system,system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;min-height:100vh;margin:0;padding:32px 24px;text-align:center}" +
+    ".qr{background:#fff;padding:18px;border-radius:16px;margin:18px 0;display:inline-block}.qr svg{display:block}" +
+    ".sec{margin-bottom:34px;display:flex;flex-direction:column;align-items:center}" +
+    ".badge{font-size:12px;font-weight:700;letter-spacing:.06em;padding:5px 12px;border-radius:999px;background:#1f6feb33;color:#79c0ff}" +
+    ".b2{background:#23863633;color:#7ee787}" +
+    "h1{font-size:22px;font-weight:600;margin-bottom:22px}p{color:#8b949e;max-width:430px;line-height:1.5;margin:6px 0}code{background:#161b22;padding:2px 8px;border-radius:6px;font-size:12px;word-break:break-all}</style>" +
+    "</head><body><h1>📱 Scan with your phone</h1>" +
+    "<div class='sec'><span class='badge'>🏠 HOME WIFI · STABLE</span><div class='qr' id='qr1'>loading…</div>" +
+    "<p><b>Install the app from this one.</b> This URL never changes — after restarting opencode, just reopen the app. No re-scan needed.</p>" +
+    "<p><code>" + lanSafe + "</code></p></div>" +
+    tunnelBlock +
     "<script src='/vendor/qrcode.js'></script>" +
-    "<script>try{var qr=qrcode(0,'M');qr.addData(\"" + safe + "\");qr.make();document.getElementById('qr').innerHTML=qr.createSvgTag({cellSize:7,margin:0});}catch(e){document.getElementById('qr').textContent='QR lib missing — type the URL below manually';}</script>" +
+    "<script>function draw(id,txt){try{var q=qrcode(0,'M');q.addData(txt);q.make();document.getElementById(id).innerHTML=q.createSvgTag({cellSize:6,margin:0});}catch(e){document.getElementById(id).textContent='QR lib missing — type the URL manually';}}" +
+    "draw('qr1',\"" + lanSafe + "\");" + (tunSafe ? "draw('qr2',\"" + tunSafe + "\");" : "") + "</script>" +
     "</body></html>"
   )
 }
@@ -787,6 +808,7 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
 <script>
 (function(){
 "use strict";
+var UIV="${UI_VERSION}";
 var KEY=null, view="list", cur=null, curDir=null, sessions=[], perms=[], es=null, refetchT=null, busyMap={};
 var $=function(id){return document.getElementById(id)};
 
@@ -837,6 +859,11 @@ function setBusy(on){
   $("typing").classList.toggle("hidden",!show);
   $("abortBtn").style.display=show?"flex":"none";
   if(show)$("main").scrollTop=$("main").scrollHeight;
+}
+function checkVersion(){
+  fetch("/version").then(function(r){return r.json()}).then(function(v){
+    if(v.uiVersion&&v.uiVersion!==UIV)location.reload();
+  }).catch(function(){});
 }
 function resync(){
   if(!KEY)return;
@@ -950,7 +977,7 @@ function connectSSE(){
   if(!KEY)return;
   if(es)es.close();
   es=new EventSource("/api/events?key="+encodeURIComponent(KEY));
-  es.onopen=function(){$("connDot").classList.add("on");resync();};
+  es.onopen=function(){$("connDot").classList.add("on");resync();checkVersion();};
   es.onerror=function(){$("connDot").classList.remove("on");setTimeout(connectSSE,4000);if(es)es.close();es=null;};
   es.onmessage=function(e){
     var ev;try{ev=JSON.parse(e.data)}catch(err){return;}

@@ -20,15 +20,16 @@ function readToken(): string | undefined {
   }
 }
 
-async function findLiveServer(token: string): Promise<{ baseUrl: string } | undefined> {
+async function findLiveServer(token: string): Promise<{ baseUrl: string; tunnelUrl?: string } | undefined> {
   const probes = []
   for (let port = PORT_START; port <= PORT_END; port++) {
     probes.push(
       fetch(`http://127.0.0.1:${port}/api/state?key=${token}`, { signal: AbortSignal.timeout(600) })
         .then(async (res) => {
           if (!res.ok) return undefined
-          const data = (await res.json()) as { baseUrl?: string }
-          return data.baseUrl ? { baseUrl: data.baseUrl } : undefined
+          const data = (await res.json()) as { baseUrl?: string; lanUrl?: string; tunnelUrl?: string }
+          const stable = data.lanUrl ?? data.baseUrl
+          return stable ? { baseUrl: stable, tunnelUrl: data.tunnelUrl ?? undefined } : undefined
         })
         .catch(() => undefined),
     )
@@ -77,9 +78,10 @@ const tui: TuiPlugin = async (api) => {
       }
       const connectUrl = `${live.baseUrl}/?key=${token}`
       const qr = await buildQr(connectUrl)
+      const away = live.tunnelUrl ? `\n\nAway from home (changes each restart):\n${live.tunnelUrl}/?key=${token}` : ""
       const body = qr
-        ? `Scan with your phone camera:\n\n${qr}\n${connectUrl}`
-        : `Open this on your phone:\n\n${connectUrl}`
+        ? `Scan with your phone camera (stable home-WiFi link):\n\n${qr}\n${connectUrl}${away}`
+        : `Open this on your phone:\n\n${connectUrl}${away}`
       show("Remote Control", body)
     })()
   }
