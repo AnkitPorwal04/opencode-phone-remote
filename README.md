@@ -82,99 +82,23 @@ Then tap the bell icon on the phone UI to subscribe.
 
 ```mermaid
 flowchart LR
-    subgraph Phone["📱 Your Phone"]
-        PWA["PWA (embedded web app)<br/>chat UI · sessions · permissions"]
-        SW["Service Worker<br/>web-push notifications"]
-    end
-
-    subgraph Mac["💻 Your Computer — opencode process"]
-        subgraph Plugin["remote-control plugin"]
-            HTTP["HTTP server<br/>ports 7777–7787<br/>token auth (SHA-256)"]
-            SSE["SSE broadcaster<br/>/api/events"]
-            PUSH["web-push sender<br/>(VAPID)"]
-            QR["QR / URL generator<br/>last-url.txt · qr.sh · /remote"]
-        end
-        CORE["opencode core server<br/>sessions · messages · permissions<br/>/event bus"]
-        TUI["opencode TUI<br/>(same process, live view)"]
-    end
-
-    CF["☁️ cloudflared tunnel<br/>(optional, HTTPS)"]
-
-    PWA -- "REST: prompt / messages /<br/>abort / permissions" --> HTTP
-    HTTP -- "SDK client calls" --> CORE
-    CORE -- "event bus<br/>(session.status, message.updated,<br/>permission.updated …)" --> SSE
-    SSE -- "live stream" --> PWA
-    PUSH -- "push notification<br/>(idle · permission · error)" --> SW
-    CORE <--> TUI
-    PWA -. "same WiFi (HTTP)" .-> HTTP
-    PWA -. "anywhere (HTTPS)" .-> CF
-    CF -.-> HTTP
-    QR -- "scan to connect" --> PWA
+    Phone["Phone (PWA)"] -->|"prompts + approvals"| Plugin["Plugin server<br/>port 7777"]
+    Plugin -->|"live answers (SSE) + push alerts"| Phone
+    Plugin <--> Core["opencode"]
 ```
 
-### Prompt round-trip (what happens when you send a message)
+### Sending a prompt
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant P as 📱 Phone PWA
-    participant RC as 🔌 Plugin server
-    participant OC as ⚙️ opencode core
-    participant LLM as 🤖 Model
-    participant TUI as 🖥️ TUI
+    participant Phone
+    participant Plugin
+    participant opencode
 
-    P->>RC: POST /api/session/:id/prompt (Bearer token)
-    RC->>RC: verify token (timingSafeEqual)
-    RC->>OC: promptAsync(parts) — fire & forget
-    RC-->>P: 202 accepted
-    OC->>LLM: run the agent
-    OC-->>TUI: message appears live in terminal too
-    loop while the agent works
-        OC-->>RC: event bus: message.part.updated / session.status busy
-        RC-->>P: SSE → typing dots + live refresh
-    end
-    OC-->>RC: session.status idle + session.idle
-    RC-->>P: SSE → busy cleared, final answer rendered
-    RC-->>P: 🔔 web-push "Session finished" (if subscribed)
-```
-
-### Permission approval flow
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant OC as ⚙️ opencode core
-    participant RC as 🔌 Plugin server
-    participant P as 📱 Phone
-
-    OC-->>RC: event: permission.updated (agent wants to run a tool)
-    RC-->>P: SSE → amber banner appears
-    RC-->>P: 🔔 push "Permission needed"
-    P->>RC: POST /api/session/:id/permission/:pid {once | always | reject}
-    RC->>OC: permission response
-    OC->>OC: agent continues (or aborts)
-    OC-->>RC: event: permission.replied
-    RC-->>P: SSE → banner dismissed
-```
-
-### Connection & pairing flow
-
-```mermaid
-flowchart TD
-    A["opencode starts"] --> B["plugin auto-loads from<br/>~/.config/opencode/plugin/"]
-    B --> C["bind first free port 7777–7787<br/>on 0.0.0.0"]
-    C --> D{"cloudflared<br/>installed?"}
-    D -- yes --> E["start quick tunnel<br/>→ https://xxx.trycloudflare.com"]
-    D -- no --> F["LAN only<br/>http://192.168.x.x:PORT"]
-    E --> G["write last-url.txt + qr.sh<br/>+ ASCII QR"]
-    F --> G
-    G --> H["type /remote in TUI<br/>→ QR dialog"]
-    H --> I["scan QR with phone camera"]
-    I --> J["URL carries ?key=TOKEN<br/>→ stored in localStorage,<br/>stripped from URL bar"]
-    J --> K["📱 connected — full remote control"]
-    K --> L{"⏻ disconnect?"}
-    L -- "this phone" --> M["clear local key"]
-    L -- "revoke ALL" --> N["POST /api/revoke<br/>→ new token minted,<br/>all phones + push subs dropped,<br/>new QR generated"]
+    Phone->>Plugin: send prompt
+    Plugin->>opencode: run agent
+    opencode-->>Phone: answer streams live
+    opencode-->>Phone: push alert when done
 ```
 
 ## Security
