@@ -1,7 +1,7 @@
 // TUI companion for the remote-control server plugin.
 // Registers /remote — instantly shows the connect QR in a dialog (no LLM round-trip).
 import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui"
-import { readFileSync } from "node:fs"
+import { readFileSync, realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
@@ -20,22 +20,38 @@ function readToken(): string | undefined {
   }
 }
 
-async function findLiveServer(token: string): Promise<{ baseUrl: string; tunnelUrl?: string } | undefined> {
-  const probes = []
+type LiveServer = { baseUrl: string; tunnelUrl?: string; directory?: string }
+
+function norm(p: string | undefined): string | undefined {
+  if (!p) return undefined
+  try {
+    return realpathSync(p)
+  } catch {
+    return p
+  }
+}
+
+async function findLiveServer(token: string, myDirectory?: string): Promise<LiveServer | undefined> {
+  const probes: Promise<LiveServer | undefined>[] = []
   for (let port = PORT_START; port <= PORT_END; port++) {
     probes.push(
       fetch(`http://127.0.0.1:${port}/api/state?key=${token}`, { signal: AbortSignal.timeout(600) })
         .then(async (res) => {
           if (!res.ok) return undefined
-          const data = (await res.json()) as { baseUrl?: string; lanUrl?: string; tunnelUrl?: string }
+          const data = (await res.json()) as { baseUrl?: string; lanUrl?: string; tunnelUrl?: string; directory?: string }
           const preferred = data.tunnelUrl ?? data.baseUrl ?? data.lanUrl
-          return preferred ? { baseUrl: preferred, tunnelUrl: data.tunnelUrl ?? undefined } : undefined
+          return preferred ? { baseUrl: preferred, tunnelUrl: data.tunnelUrl ?? undefined, directory: data.directory } : undefined
         })
         .catch(() => undefined),
     )
   }
-  const results = await Promise.all(probes)
-  return results.find((r) => r !== undefined)
+  const results = (await Promise.all(probes)).filter((r): r is LiveServer => r !== undefined)
+  const mine = norm(myDirectory)
+  if (mine) {
+    const match = results.find((r) => norm(r.directory) === mine)
+    if (match) return match
+  }
+  return results[0]
 }
 
 async function buildQr(url: string): Promise<string | undefined> {
@@ -68,7 +84,8 @@ const tui: TuiPlugin = async (api) => {
       return
     }
     void (async () => {
-      const live = await findLiveServer(token)
+      const myDir = api.state.path?.directory ?? api.state.path?.worktree
+      const live = await findLiveServer(token, myDir)
       if (!live) {
         show(
           "Remote Control",
