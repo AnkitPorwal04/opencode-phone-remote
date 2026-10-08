@@ -28,8 +28,8 @@ async function findLiveServer(token: string): Promise<{ baseUrl: string; tunnelU
         .then(async (res) => {
           if (!res.ok) return undefined
           const data = (await res.json()) as { baseUrl?: string; lanUrl?: string; tunnelUrl?: string }
-          const stable = data.lanUrl ?? data.baseUrl
-          return stable ? { baseUrl: stable, tunnelUrl: data.tunnelUrl ?? undefined } : undefined
+          const preferred = data.tunnelUrl ?? data.baseUrl ?? data.lanUrl
+          return preferred ? { baseUrl: preferred, tunnelUrl: data.tunnelUrl ?? undefined } : undefined
         })
         .catch(() => undefined),
     )
@@ -78,10 +78,10 @@ const tui: TuiPlugin = async (api) => {
       }
       const connectUrl = `${live.baseUrl}/?key=${token}`
       const qr = await buildQr(connectUrl)
-      const away = live.tunnelUrl ? `\n\nAway from home (changes each restart):\n${live.tunnelUrl}/?key=${token}` : ""
+      const note = live.tunnelUrl ? "" : "\n\n(tunnel still starting — run /remote again in a few seconds for the works-anywhere link)"
       const body = qr
-        ? `Scan with your phone camera (stable home-WiFi link):\n\n${qr}\n${connectUrl}${away}`
-        : `Open this on your phone:\n\n${connectUrl}${away}`
+        ? `Scan with your phone camera:\n\n${qr}\n${connectUrl}${note}`
+        : `Open this on your phone:\n\n${connectUrl}${note}`
       show("Remote Control", body)
     })()
   }
