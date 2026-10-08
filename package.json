@@ -1,5 +1,5 @@
 {
-  "name": "opencode-phone-remote",
+  "name": "pocketpilot",
   "version": "0.1.0",
   "description": "Control any opencode session from your phone: scan a QR, send prompts, watch answers live, approve permissions, and get push alerts.",
   "type": "module",
@@ -26,12 +26,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AnkitPorwal04/opencode-phone-remote.git"
+    "url": "git+https://github.com/AnkitPorwal04/pocketpilot.git"
   },
   "bugs": {
-    "url": "https://github.com/AnkitPorwal04/opencode-phone-remote/issues"
+    "url": "https://github.com/AnkitPorwal04/pocketpilot/issues"
   },
-  "homepage": "https://github.com/AnkitPorwal04/opencode-phone-remote#readme",
+  "homepage": "https://github.com/AnkitPorwal04/pocketpilot#readme",
   "dependencies": {
     "qrcode-generator": "^2.0.4",
     "web-push": "^3.6.7"

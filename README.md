@@ -1,4 +1,4 @@
-# opencode-phone-remote
+# pocketpilot
 
 Control any [opencode](https://opencode.ai) session from your phone. Scan a QR code, send prompts, watch answers stream in live, approve permission requests, and get push alerts when the agent finishes or needs you.
 
@@ -22,7 +22,7 @@ Add to `~/.config/opencode/opencode.json`:
 
 ```json
 {
-  "plugin": ["opencode-phone-remote"]
+  "plugin": ["pocketpilot"]
 }
 ```
 
@@ -33,15 +33,15 @@ For the instant `/remote` QR command in the TUI, also add to `~/.config/opencode
 ```json
 {
   "$schema": "https://opencode.ai/tui.json",
-  "plugin": ["opencode-phone-remote/tui"]
+  "plugin": ["pocketpilot/tui"]
 }
 ```
 
 ### Option B — install script
 
 ```sh
-git clone https://github.com/AnkitPorwal04/opencode-phone-remote.git
-cd opencode-phone-remote
+git clone https://github.com/AnkitPorwal04/pocketpilot.git
+cd pocketpilot
 ./install.sh
 ```
 

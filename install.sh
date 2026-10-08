@@ -4,7 +4,7 @@ set -euo pipefail
 OC_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)/src"
 
-echo "Installing opencode-phone-remote into $OC_DIR"
+echo "Installing pocketpilot into $OC_DIR"
 
 mkdir -p "$OC_DIR/plugin" "$OC_DIR/tui-plugins"
 cp "$SRC_DIR/plugin.ts" "$OC_DIR/plugin/remote-control.ts"
