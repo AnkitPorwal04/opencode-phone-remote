@@ -1,4 +1,4 @@
-# pocketpilot
+# Pocketpilot
 
 Control any [opencode](https://opencode.ai) session from your phone. Scan a QR code, send prompts, watch answers stream in live, approve permission requests, and get push alerts when the agent finishes or needs you.
 
