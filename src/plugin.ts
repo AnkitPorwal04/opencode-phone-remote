@@ -45,7 +45,7 @@ const RC_DIR = join(homedir(), ".config", "opencode", "remote-control")
 const STATE_FILE = join(RC_DIR, "state.json")
 const PORT_RANGE = [7777, 7778, 7779, 7780, 7781, 7782, 7783, 7784, 7785, 7786, 7787]
 // bump when the embedded PWA changes - connected phones auto-reload on mismatch
-const UI_VERSION = "3"
+const UI_VERSION = "4"
 
 // ---------- state ----------
 function loadState(): RCState {
@@ -766,7 +766,7 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
     <span class="dot" id="connDot" title="live connection"></span>
     <button class="icon hidden" id="bellBtn">🔔</button>
     <button class="icon" id="refreshBtn">↻</button>
-    <button class="icon" id="outBtn">⏻</button>
+    <button class="icon" id="outBtn" title="disconnect"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 3v8" fill="none" stroke="#ff7b72" stroke-width="2.2" stroke-linecap="round"/><path d="M7 6.2a8 8 0 1 0 10 0" fill="none" stroke="#ff7b72" stroke-width="2.2" stroke-linecap="round"/></svg></button>
   </header>
   <main id="main">
     <div id="connectHelp" class="hidden">No access key.<br>On your Mac run:<br><b style="color:#e9edf4">~/.config/opencode/remote-control/qr.sh</b><br>and scan the QR again.</div>
